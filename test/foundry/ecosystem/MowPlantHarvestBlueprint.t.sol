@@ -14,12 +14,15 @@ import {BeanstalkPrice} from "contracts/ecosystem/price/BeanstalkPrice.sol";
 import {IBeanstalk} from "contracts/interfaces/IBeanstalk.sol";
 import {OperatorWhitelist} from "contracts/ecosystem/OperatorWhitelist.sol";
 import {MowPlantHarvestBlueprint} from "contracts/ecosystem/MowPlantHarvestBlueprint.sol";
+import {MockBlueprint} from "contracts/mocks/MockBlueprint.sol";
+import {LibTractor} from "contracts/libraries/LibTractor.sol";
 import "forge-std/console.sol";
 
 contract MowPlantHarvestBlueprintTest is TractorHelper {
     address[] farmers;
     PriceManipulation priceManipulation;
     BeanstalkPrice beanstalkPrice;
+    MockBlueprint mockBlueprint;
 
     event Plant(address indexed account, uint256 beans);
     event Harvest(address indexed account, uint256 fieldId, uint256[] plots, uint256 beans);
@@ -76,6 +79,10 @@ contract MowPlantHarvestBlueprintTest is TractorHelper {
 
         setTractorHelpers(address(tractorHelpers));
         setMowPlantHarvestBlueprint(address(mowPlantHarvestBlueprint));
+
+        // Deploy mock blueprint for dynamic data tests
+        mockBlueprint = new MockBlueprint(address(bs));
+        vm.label(address(mockBlueprint), "MockBlueprint");
 
         // Advance season to grow stalk
         advanceSeason();
@@ -296,7 +303,7 @@ contract MowPlantHarvestBlueprintTest is TractorHelper {
         advanceSeason();
 
         // assert user has harvestable pods
-        (uint256 totalHarvestablePods, ) = _userHarvestablePods(state.user, DEFAULT_FIELD_ID);
+        (uint256 totalHarvestablePods, ) = (state.user, DEFAULT_FIELD_ID);
         assertGt(totalHarvestablePods, 0, "user should have harvestable pods to harvest");
 
         // Setup blueprint with minHarvestAmount less than harvest tip amount
@@ -577,5 +584,199 @@ contract MowPlantHarvestBlueprintTest is TractorHelper {
     function skipGermination() internal {
         advanceSeason();
         advanceSeason();
+    }
+
+    /**
+     * @notice Test tractorWithData function with realistic dynamic data injection
+     */
+    function test_tractorWithData_withDynamicData() public {
+        address farmer = farmers[0];
+        address operator = address(this);
+        
+        TestState memory state = setupMowPlantHarvestBlueprintTest(false, true, true, true);
+        advanceSeason(); // Make plots harvestable
+        
+       
+        uint256[] memory harvestablePlots = new uint256[](2);
+        harvestablePlots[0] = 0;
+        harvestablePlots[1] = 500e6;
+        
+        uint256[] memory plotAmounts = new uint256[](2);
+        plotAmounts[0] = 500100000; 
+        plotAmounts[1] = 500000000;
+        
+        // Create contract data array with real data
+        TractorFacet.ContractData[] memory contractData = new TractorFacet.ContractData[](2);
+        contractData[0] = TractorFacet.ContractData({
+            key: mockBlueprint.HARVEST_PLOTS_KEY(),
+            value: abi.encode(harvestablePlots)
+        });
+        contractData[1] = TractorFacet.ContractData({
+            key: mockBlueprint.PLOT_AMOUNTS_KEY(),
+            value: abi.encode(plotAmounts)
+        });
+        
+        bytes memory blueprintCallData = abi.encodeCall(mockBlueprint.executeBlueprint, ());
+        
+        AdvancedFarmCall[] memory farmCalls = new AdvancedFarmCall[](1);
+        farmCalls[0] = AdvancedFarmCall({
+            callData: abi.encodeCall(
+                FarmFacet.farm,
+                (abi.encode([AdvancedFarmCall({callData: blueprintCallData})]))
+            )
+        });
+        
+        LibTractor.Blueprint memory blueprint = LibTractor.Blueprint({
+            publisher: farmer,
+            data: abi.encodePacked(bytes4(0x12345678), abi.encode(farmCalls)),
+            operatorPasteInstrs: new bytes32[](0),
+            maxNonce: 10,
+            startTime: block.timestamp - 1000,
+            endTime: block.timestamp + 1000
+        });
+        
+        bytes32 blueprintHash = bs.getBlueprintHash(blueprint);
+        bytes memory signature = _createMockSignature();
+        
+        LibTractor.Requisition memory requisition = LibTractor.Requisition({
+            blueprint: blueprint,
+            blueprintHash: blueprintHash,
+            signature: signature
+        });
+        
+        vm.startPrank(operator);
+        
+        // Expect harvest event to be emitted  
+        uint256 totalExpectedPods = plotAmounts[0] + plotAmounts[1]; 
+        vm.expectEmit(true, true, true, true);
+        emit Harvest(farmer, bs.activeField(), harvestablePlots, totalExpectedPods);
+        
+        bytes[] memory results = bs.tractorWithData(
+            requisition,
+            new bytes(0),
+            contractData
+        );
+        
+        vm.stopPrank();
+        
+        // Verify execution was successful
+        assertEq(results.length, 1, "Should have one result");
+        
+        // Verify data was cleared after execution
+        assertEq(bs.getTractorData(mockBlueprint.HARVEST_PLOTS_KEY()).length, 0, "Harvest plot data should be cleared");
+        assertEq(bs.getTractorData(mockBlueprint.PLOT_AMOUNTS_KEY()).length, 0, "Plot amount data should be cleared");
+    }
+
+    /**
+     * @notice Test that blueprint can access dynamic data during execution
+     */
+    function test_blueprintCanAccessDynamicData() public {
+        address farmer = farmers[0];
+        address operator = address(this);
+        
+        uint256[] memory testPlots = new uint256[](2);
+        testPlots[0] = 5000;
+        testPlots[1] = 6000;
+        
+        TractorFacet.ContractData[] memory contractData = new TractorFacet.ContractData[](1);
+        contractData[0] = TractorFacet.ContractData({
+            key: mockBlueprint.HARVEST_PLOTS_KEY(),
+            value: abi.encode(testPlots)
+        });
+        
+        // Test hasDataForKey function
+        bytes memory checkDataCallData = abi.encodeCall(
+            mockBlueprint.hasDataForKey, 
+            (mockBlueprint.HARVEST_PLOTS_KEY())
+        );
+        
+        AdvancedFarmCall[] memory farmCalls = new AdvancedFarmCall[](1);
+        farmCalls[0] = AdvancedFarmCall({
+            callData: abi.encodeCall(
+                FarmFacet.farm,
+                (abi.encode([AdvancedFarmCall({callData: checkDataCallData})]))
+            )
+        });
+        
+        LibTractor.Blueprint memory blueprint = LibTractor.Blueprint({
+            publisher: farmer,
+            data: abi.encodePacked(bytes4(0x12345678), abi.encode(farmCalls)),
+            operatorPasteInstrs: new bytes32[](0),
+            maxNonce: 10,
+            startTime: block.timestamp - 1000,
+            endTime: block.timestamp + 1000
+        });
+        
+        bytes32 blueprintHash = bs.getBlueprintHash(blueprint);
+        bytes memory signature = _createMockSignature();
+        
+        LibTractor.Requisition memory requisition = LibTractor.Requisition({
+            blueprint: blueprint,
+            blueprintHash: blueprintHash,
+            signature: signature
+        });
+        
+        vm.prank(operator);
+        bytes[] memory results = bs.tractorWithData(requisition, new bytes(0), contractData);
+        
+        // The mock blueprint's hasDataForKey should return true
+        bool hasData = abi.decode(results[0], (bool));
+        assertTrue(hasData, "Blueprint should be able to access injected data");
+    }
+
+    /**
+     * @notice Test tractorWithData with empty contract data
+     */
+    function test_tractorWithData_emptyContractData() public {
+        address farmer = farmers[0];
+        address operator = address(this);
+        
+        TractorFacet.ContractData[] memory contractData = new TractorFacet.ContractData[](0);
+        
+        bytes memory checkDataCallData = abi.encodeCall(
+            mockBlueprint.hasDataForKey,
+            (mockBlueprint.HARVEST_PLOTS_KEY())
+        );
+        
+        AdvancedFarmCall[] memory farmCalls = new AdvancedFarmCall[](1);
+        farmCalls[0] = AdvancedFarmCall({
+            callData: abi.encodeCall(
+                FarmFacet.farm,
+                (abi.encode([AdvancedFarmCall({callData: checkDataCallData})]))
+            )
+        });
+        
+        LibTractor.Blueprint memory blueprint = LibTractor.Blueprint({
+            publisher: farmer,
+            data: abi.encodePacked(bytes4(0x12345678), abi.encode(farmCalls)),
+            operatorPasteInstrs: new bytes32[](0),
+            maxNonce: 10,
+            startTime: block.timestamp - 1000,
+            endTime: block.timestamp + 1000
+        });
+        
+        bytes32 blueprintHash = bs.getBlueprintHash(blueprint);
+        bytes memory signature = _createMockSignature();
+        
+        LibTractor.Requisition memory requisition = LibTractor.Requisition({
+            blueprint: blueprint,
+            blueprintHash: blueprintHash,
+            signature: signature
+        });
+        
+        vm.prank(operator);
+        bytes[] memory results = bs.tractorWithData(requisition, new bytes(0), contractData);
+        
+        // Should return false (no data)
+        bool hasData = abi.decode(results[0], (bool));
+        assertFalse(hasData, "Should return false when no data is injected");
+    }
+
+    /**
+     * @notice Helper function to create mock signature for testing
+     */
+    function _createMockSignature() internal pure returns (bytes memory) {
+        // Return a mock signature for testing purposes
+        return abi.encodePacked(bytes32(0), bytes32(0), uint8(27));
     }
 }
