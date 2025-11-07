@@ -43,6 +43,11 @@ contract TractorFacet is Invariable, ReentrancyGuard {
         uint256 gasleft
     );
 
+    struct ContractData {
+        uint256 key;
+        bytes value;
+    }
+
     /**
      * @notice Ensure requisition hash matches blueprint data and signer is publisher.
      */
@@ -297,5 +302,76 @@ contract TractorFacet is Invariable, ReentrancyGuard {
 
     function operator() external view returns (address) {
         return LibTractor._getOperator();
+    }
+
+    /**
+     * @notice Get tractor data by key (for blueprint contract access).
+     * @param key The key to get the data for
+     * @return The data for the key
+     */
+    function getTractorData(uint256 key) external view returns (bytes memory) {
+        return LibTractor._getTractorData(key);
+    }
+
+    /**
+     * @notice Execute a Tractor blueprint with dynamic data injection.
+     * @param requisition The blueprint requisition containing signature and blueprint data
+     * @param operatorInjectorData Operator data for fixed-position injection (like normal tractor)
+     * @param contractData Array of key-value pairs for dynamic data injection
+     * @return results Array of results from executed farm calls
+     */
+    function tractorWithData(
+        LibTractor.Requisition calldata requisition,
+        bytes memory operatorInjectorData,
+        ContractData[] memory contractData
+    )
+        external
+        payable
+        fundsSafu
+        nonReentrantFarm
+        verifyRequisition(requisition)
+        runBlueprint(requisition)
+        returns (bytes[] memory results)
+    {
+        require(requisition.blueprint.data.length > 0, "TractorWithData: data empty");
+
+        LibTractor._setCurrentBlueprintHash(requisition.blueprintHash);
+
+        LibTractor._setOperator(msg.sender);
+
+        for (uint256 i = 0; i < contractData.length; i++) {
+            LibTractor._setTractorData(contractData[i].key, contractData[i].value);
+        }
+
+        AdvancedFarmCall[] memory calls = abi.decode(
+            LibBytes.sliceFrom(requisition.blueprint.data, 4),
+            (AdvancedFarmCall[])
+        );
+
+        for (uint256 i; i < requisition.blueprint.operatorPasteInstrs.length; ++i) {
+            bytes32 operatorPasteInstr = requisition.blueprint.operatorPasteInstrs[i];
+            uint80 pasteCallIndex = operatorPasteInstr.getIndex1();
+            require(calls.length > pasteCallIndex, "TractorWithData: pasteCallIndex OOB");
+
+            LibBytes.pasteBytesTractor(
+                operatorPasteInstr,
+                operatorInjectorData,
+                calls[pasteCallIndex].callData
+            );
+        }
+
+        results = new bytes[](calls.length);
+        for (uint256 i = 0; i < calls.length; ++i) {
+            require(calls[i].callData.length != 0, "TractorWithData: empty AdvancedFarmCall");
+            results[i] = LibFarm._advancedFarm(calls[i], results);
+        }
+
+        for (uint256 i = 0; i < contractData.length; i++) {
+            LibTractor._clearTractorData(contractData[i].key);
+        }
+
+        LibTractor._resetCurrentBlueprintHash();
+
+        LibTractor._resetOperator();
     }
 }

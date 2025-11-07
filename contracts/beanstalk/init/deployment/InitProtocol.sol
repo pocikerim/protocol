@@ -10,6 +10,7 @@ import {BeanstalkERC20} from "contracts/tokens/ERC20/BeanstalkERC20.sol";
 import {SafeERC20, IERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {AppStorage} from "contracts/beanstalk/storage/AppStorage.sol";
 import {LibTractor} from "contracts/libraries/LibTractor.sol";
+import {LibTractorStorage} from "contracts/libraries/LibTractorStorage.sol";
 import {LibCases} from "contracts/libraries/LibCases.sol";
 import {Distribution} from "contracts/beanstalk/facets/sun/abstract/Distribution.sol";
 import {C} from "contracts/C.sol";
@@ -195,7 +196,7 @@ contract InitProtocol {
      * @notice Sets the tractor version and active publisher.
      */
     function setTractor() internal {
-        LibTractor.TractorStorage storage ts = LibTractor._tractorStorage();
+        LibTractorStorage.TractorStorage storage ts = LibTractor._tractorStorage();
         ts.activePublisher = payable(address(1));
         ts.version = "1.0.0";
     }

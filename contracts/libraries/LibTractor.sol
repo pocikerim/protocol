@@ -4,6 +4,8 @@
 
 pragma solidity ^0.8.20;
 
+import {LibTractorStorage} from "./LibTractorStorage.sol";
+
 /**
  * @title Lib Tractor
  **/
@@ -29,21 +31,6 @@ library LibTractor {
 
     event TractorVersionSet(string version);
 
-    struct TractorStorage {
-        // Number of times the blueprint has been run.
-        mapping(bytes32 => uint256) blueprintNonce;
-        // Publisher Address => counter id => counter value.
-        mapping(address => mapping(bytes32 => uint256)) blueprintCounters;
-        // Publisher of current operations. Set to address(1) when no active publisher.
-        address payable activePublisher;
-        // Version of Tractor. Only Blueprints using current Version can run.
-        string version;
-        // Hash of currently executing blueprint
-        bytes32 currentBlueprintHash;
-        // Address of the currently executing operator
-        address operator;
-    }
-
     // Blueprint stores blueprint related values
     struct Blueprint {
         address publisher;
@@ -67,11 +54,38 @@ library LibTractor {
      * @notice Get tractor storage from storage.
      * @return ts Storage object containing tractor data
      */
-    function _tractorStorage() internal pure returns (TractorStorage storage ts) {
+    function _tractorStorage() internal pure returns (LibTractorStorage.TractorStorage storage ts) {
         // keccak256("diamond.storage.tractor") == 0x7efbaaac9214ca1879e26b4df38e29a72561affb741bba775ce66d5bb6a82a07
         assembly {
             ts.slot := 0x7efbaaac9214ca1879e26b4df38e29a72561affb741bba775ce66d5bb6a82a07
         }
+    }
+
+    /**
+     * @notice Get tractor data by key.
+     * @param key The key to get the data for
+     * @return The data for the key
+     */
+    function _getTractorData(uint256 key) internal view returns (bytes memory) {
+        return _tractorStorage().data[key];
+    }
+
+    /**
+     * @notice Set tractor data by key.
+     * @param key The key to set the data for
+     * @param value The data to set for the key
+     */
+    function _setTractorData(uint256 key, bytes memory value) internal {
+        _tractorStorage().data[key] = value;
+    }
+
+    /**
+     * @notice Clear tractor data by key.
+     * @dev Resets to bytes(abi.encode(1)) instead of zero for gas optimization.
+     * @param key The key to clear the data for
+     */
+    function _clearTractorData(uint256 key) internal {
+        _tractorStorage().data[key] = abi.encode(1);
     }
 
     /**
@@ -104,7 +118,7 @@ library LibTractor {
      * @param publisher blueprint publisher address
      */
     function _setPublisher(address payable publisher) internal {
-        TractorStorage storage ts = _tractorStorage();
+        LibTractorStorage.TractorStorage storage ts = _tractorStorage();
         require(
             uint160(bytes20(address(ts.activePublisher))) <= 1,
             "LibTractor: publisher already set"
