@@ -81,10 +81,11 @@ library LibTractor {
 
     /**
      * @notice Clear tractor data by key.
+     * @dev Resets to bytes(abi.encode(1)) instead of zero for gas optimization.
      * @param key The key to clear the data for
      */
     function _clearTractorData(uint256 key) internal {
-        delete _tractorStorage().data[key];
+        _tractorStorage().data[key] = abi.encode(1);
     }
 
     /**
